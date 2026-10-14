@@ -2,7 +2,7 @@
 
 ## QCY product image and trademark
 
-`Resources/Headset.png`, `Resources/AppIcon.icns` e `docs/media/panel.jpg` contêm
+`Resources/Headset.png`, `Resources/AppIcon.icns` e `docs/media/panel.png` contêm
 uma foto de produto da QCY, usada apenas para identificar o dispositivo suportado.
 A imagem e a marca "QCY" pertencem aos seus donos.
 
