@@ -11,12 +11,24 @@ sem o app oficial da QCY.
 - **Build**: Swift Package Manager (sem `.xcodeproj`), empacotado como `.app`.
 - **Requer**: macOS 14 ou superior.
 
-> **Não-oficial.** O protocolo JieLi RCSP foi documentado pela comunidade para o
-> H3 / H3 Pro. Use por sua conta e risco.
+> **Não-oficial e sem vínculo com a QCY.** Este projeto não é afiliado nem
+> endossado pela QCY. O protocolo JieLi RCSP foi documentado pela comunidade para
+> o H3 / H3 Pro. Use por sua conta e risco.
 
 ## Preview
 
 ![Painel do QCY H3 Control](docs/media/panel.jpg)
+
+## Quick start com uma LLM
+
+Se você usa um assistente de código (Claude Code, Codex, Cursor, Gemini CLI e
+afins), clone o repositório e peça:
+
+> Vamos usar este projeto. Configure ele para o meu fone.
+
+O arquivo [`AGENTS.md`](AGENTS.md) na raiz explica ao assistente como compilar o
+app, achar o fone, checar compatibilidade e diagnosticar. Ele vai te perguntar o
+que não conseguir descobrir sozinho.
 
 ## Recursos
 
@@ -35,7 +47,8 @@ sem o app oficial da QCY.
 ## Como compilar e rodar
 
 ```bash
-cd ~/Desktop/Projetos/qcy-menubar
+git clone https://github.com/lucianothesilva/qcy-menubar
+cd qcy-menubar
 ./build.sh            # compila (release) e monta "QCY H3 Control.app"
 open "QCY H3 Control.app"
 ```
@@ -78,10 +91,15 @@ Pacote RCSP: `FE DC BA | flag | opCode | len(2B BE) | [status] | sn | [xmOp] | p
 No macOS o CoreBluetooth não expõe o MAC; usamos o `peripheral.identifier` (UUID
 por-host) e o nome `QCY H3 Pro-APP`.
 
-## Testado
+## Compatibilidade
 
-Validado com o **QCY H3 Pro** rodando no macOS: conexão automática, bateria,
-ANC (leitura e escrita), game mode e equalizador (leitura e escrita).
+- **QCY H3 Pro**: testado e funcionando (conexão automática, bateria, ANC, game
+  mode e equalizador, leitura e escrita).
+- **Outros modelos QCY**: *talvez* funcionem. O app fala o JieLi RCSP no serviço
+  `a002`; se o seu fone expuser esse serviço com o mesmo layout e os mesmos
+  comandos, deve dar certo. Modelos que usam o protocolo padrão da QCY (serviço
+  `1001`/`1002`) ou chipset Airoha/ZR não são suportados. Não há garantia: dá para
+  testar com o modo `--diagnose` (veja abaixo).
 
 ## Limitações conhecidas
 
@@ -112,6 +130,10 @@ fica em `~/Library/Application Support/QCYMenubar/log.txt`.
 qcy-menubar/
 ├── Package.swift
 ├── build.sh                     # compila + monta o .app + assinatura ad-hoc
+├── AGENTS.md                    # guia para assistentes de IA
+├── LICENSE
+├── THIRD_PARTY_NOTICES.md       # imagem da QCY + referências
+├── docs/media/panel.jpg         # print usado no README
 ├── Support/Info.plist           # LSUIElement, NSBluetoothAlwaysUsageDescription
 ├── Resources/                   # Headset.png (header) + AppIcon.icns
 └── Sources/QCYMenubar/
@@ -125,4 +147,9 @@ qcy-menubar/
         ├── QCYPanel.swift       # conteúdo do painel (cards, EQ)
         └── Components.swift     # slider vertical + indicador de status
 ```
+
+## Licença
+
+MIT. Veja [LICENSE](LICENSE). Assets de terceiros (a imagem da QCY e as
+referências) estão em [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
