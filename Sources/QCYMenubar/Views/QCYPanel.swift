@@ -4,6 +4,8 @@ import AppKit
 struct QCYPanel: View {
     @ObservedObject var model: HeadsetModel
 
+    @State private var tab: PanelTab = .noise
+
     private let mainModeKeys = ["off", "transparency", "adaptive", "antiwind", "low", "medium", "high"]
     private let sceneModeKeys = ["commuting-low", "commuting-medium", "commuting-high",
                                  "indoor-low", "indoor-medium", "indoor-high"]
@@ -12,6 +14,18 @@ struct QCYPanel: View {
         VStack(spacing: 0) {
             header.padding(.horizontal, 13).padding(.top, 14).padding(.bottom, 12)
             separator
+
+            if model.connection == .connected {
+                statusCard
+                    .padding(.horizontal, 13)
+                    .padding(.top, 10)
+                    .padding(.bottom, 10)
+                tabBar
+                    .padding(.horizontal, 13)
+                    .padding(.bottom, 10)
+                separator
+            }
+
             contentScroll
             separator
             footer.padding(.horizontal, 13).padding(.vertical, 10)
@@ -100,11 +114,15 @@ struct QCYPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 if model.connection == .connected {
-                    statusCard
-                    ancCard
-                    gameCard
-                    eqCard
-                    infoCard
+                    switch tab {
+                    case .noise:
+                        ancCard
+                        gameCard
+                    case .equalizer:
+                        eqCard
+                    case .settings:
+                        infoCard
+                    }
                 } else {
                     connectCard
                 }
@@ -113,6 +131,37 @@ struct QCYPanel: View {
             .padding(.vertical, 12)
         }
         .scrollIndicators(.hidden)
+    }
+
+    // MARK: - Tabs
+
+    private var tabBar: some View {
+        HStack(spacing: 4) {
+            ForEach(PanelTab.allCases) { item in
+                Button {
+                    tab = item
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: item.symbol)
+                            .font(.system(size: 15, weight: .medium))
+                        Text(item.title)
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(tab == item ? Theme.accent : Theme.mutedInk)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(tab == item ? Theme.accent.opacity(0.18) : Color.clear))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(4)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color.white.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.7))
     }
 
     // MARK: - Connect
@@ -482,5 +531,27 @@ struct QCYPanel: View {
                 model.eqBands[i] = Int((newValue * 100).rounded())
             }
         )
+    }
+}
+
+private enum PanelTab: String, CaseIterable, Identifiable {
+    case noise, equalizer, settings
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .noise: return "Ruído"
+        case .equalizer: return "Equalizador"
+        case .settings: return "Ajustes"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .noise: return "waveform"
+        case .equalizer: return "slider.vertical.3"
+        case .settings: return "gearshape"
+        }
     }
 }

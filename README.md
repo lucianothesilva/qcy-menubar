@@ -2,12 +2,15 @@
 
 App nativo de **barra de menus** para controlar o headset **QCY H3 / H3 Pro**
 pelo protocolo proprietário **JieLi RCSP** sobre **Bluetooth Low Energy (BLE)**,
-sem o app oficial da QCY.
+sem depender do app oficial.
+
+A QCY **não tem app para macOS**: os oficiais existem só para iOS e Android. Este
+projeto existe para cobrir essa lacuna.
 
 - **Stack**: Swift 6 + SwiftUI + AppKit + CoreBluetooth.
 - **UI**: `NSStatusItem` + `NSPanel` borderless com seta apontando para o ícone
   (mesma abordagem do [LGwebOS-menubar](https://github.com/gabrielgreco1/LGwebOS-menubar)),
-  tema escuro, cards e scroll único.
+  tema escuro, cards e abas (Ruído / Equalizador / Ajustes).
 - **Build**: Swift Package Manager (sem `.xcodeproj`), empacotado como `.app`.
 - **Requer**: macOS 14 ou superior.
 
