@@ -17,7 +17,9 @@ sem o app oficial da QCY.
 
 ## Preview
 
-![Painel do QCY H3 Control](docs/media/panel.jpg)
+<p align="center">
+  <img src="docs/media/panel.jpg" alt="Painel do QCY H3 Control" width="360">
+</p>
 
 ## Quick start com uma LLM
 
