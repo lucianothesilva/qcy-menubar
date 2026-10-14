@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>QCY H3 Control</string>
+    <key>CFBundleDisplayName</key>
+    <string>QCY H3 Control</string>
+    <key>CFBundleExecutable</key>
+    <string>QCYMenubar</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.local.qcy-menubar</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>O QCY H3 Control usa Bluetooth para conversar com o seu fone QCY H3 / H3 Pro e controlar ANC, equalizador e modo de jogo.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>O QCY H3 Control usa Bluetooth para conversar com o seu fone QCY H3 / H3 Pro.</string>
+</dict>
+</plist>
