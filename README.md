@@ -21,7 +21,7 @@ projeto existe para cobrir essa lacuna.
 ## Preview
 
 <p align="center">
-  <img src="docs/media/panel.jpg" alt="Painel do QCY H3 Control" width="360">
+  <img src="docs/media/panel.png" alt="Painel do QCY H3 Control" width="360">
 </p>
 
 ## Quick start com uma LLM
@@ -138,7 +138,7 @@ qcy-menubar/
 ├── AGENTS.md                    # guia para assistentes de IA
 ├── LICENSE
 ├── THIRD_PARTY_NOTICES.md       # imagem da QCY + referências
-├── docs/media/panel.jpg         # print usado no README
+├── docs/media/panel.png         # print usado no README
 ├── Support/Info.plist           # LSUIElement, NSBluetoothAlwaysUsageDescription
 ├── Resources/                   # Headset.png (header) + AppIcon.icns
 └── Sources/QCYMenubar/
