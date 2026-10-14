@@ -2,7 +2,7 @@
 
 App nativo de **barra de menus** para controlar o headset **QCY H3 / H3 Pro**
 pelo protocolo proprietário **JieLi RCSP** sobre **Bluetooth Low Energy (BLE)**,
-sem o app oficial da QCY e sem depender do CLI em Python.
+sem o app oficial da QCY.
 
 - **Stack**: Swift 6 + SwiftUI + AppKit + CoreBluetooth.
 - **UI**: `NSStatusItem` + `NSPanel` borderless com seta apontando para o ícone
@@ -11,9 +11,8 @@ sem o app oficial da QCY e sem depender do CLI em Python.
 - **Build**: Swift Package Manager (sem `.xcodeproj`), empacotado como `.app`.
 - **Requer**: macOS 14 ou superior.
 
-> **Não-oficial.** O protocolo foi documentado pela comunidade (H3), e as tabelas
-> de ANC/EQ aqui são um porte direto do CLI `qcy-h3-control`
-> (`qcy/rcsp.py`, `qcy/device.py`). Use por sua conta e risco.
+> **Não-oficial.** O protocolo JieLi RCSP foi documentado pela comunidade para o
+> H3 / H3 Pro. Use por sua conta e risco.
 
 ## Recursos
 
@@ -61,7 +60,7 @@ A conexão é **automática** por design. Dá para desligar no menu "..." do pai
 do último fone para reconectar em menos de um segundo; enquanto não acha, mostra
 "Procurando o fone...".
 
-## Notas de protocolo (porte do CLI)
+## Notas de protocolo
 
 Pacote RCSP: `FE DC BA | flag | opCode | len(2B BE) | [status] | sn | [xmOp] | params | EF`
 
@@ -75,16 +74,20 @@ Pacote RCSP: `FE DC BA | flag | opCode | len(2B BE) | [status] | sn | [xmOp] | p
 No macOS o CoreBluetooth não expõe o MAC; usamos o `peripheral.identifier` (UUID
 por-host) e o nome `QCY H3 Pro-APP`.
 
+## Testado
+
+Validado com o **QCY H3 Pro** rodando no macOS: conexão automática, bateria,
+ANC (leitura e escrita), game mode e equalizador (leitura e escrita).
+
 ## Limitações conhecidas
 
-- **Não foi testado contra o hardware ainda.** O porte do protocolo é fiel ao CLI,
-  mas timing de sequência (`sn`), handshake e remontagem de pacotes de notify só
-  se confirmam rodando com o fone. Se algo falhar, compare com o CLI `qcy`.
-- O advertising do canal `-APP` nem sempre está no ar (ver README do projeto
-  Python). Se o `Conectar` não achar o fone, reconecte o headset e tente de novo.
+- O canal `-APP` só aparece quando o fone está ligado e por perto. Se o app não
+  achar o fone, reconecte o headset e tente de novo.
 - Sem controle de ENC do microfone (não existe no firmware/protocolo do H3 Pro).
+- Não há comando de **desligar** por software nesse protocolo; o que existe é
+  **reiniciar** o dispositivo (opcode `0xE7`). Para desligar, use o botão do fone.
 
-## Diagnóstico e linha de comando
+## Diagnóstico
 
 O executável dentro do `.app` aceita flags (o app é um agente, então não há Dock):
 
