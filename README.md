@@ -14,6 +14,10 @@ sem o app oficial da QCY.
 > **Não-oficial.** O protocolo JieLi RCSP foi documentado pela comunidade para o
 > H3 / H3 Pro. Use por sua conta e risco.
 
+## Preview
+
+![Painel do QCY H3 Control](docs/media/panel.jpg)
+
 ## Recursos
 
 - **Conexão automática** com o canal de controle BLE (`QCY H3 Pro-APP`, service `a002`),
