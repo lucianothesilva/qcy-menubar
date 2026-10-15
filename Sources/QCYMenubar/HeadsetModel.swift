@@ -235,23 +235,46 @@ final class HeadsetModel: NSObject, ObservableObject {
         if let b = await readCharacteristic(Self.batteryCharUUID) {
             lines.append("bateria (char 0008): \(hexStr(b))")
         }
+
+        lines.append("--- characteristics legíveis ---")
+        lines.append(contentsOf: await readAllCharacteristics())
+
         guard let engine else { return lines }
-        let probes: [(String, UInt8)] = [
-            ("0x30 versão (L/R)", 0x30),
-            ("0x2F bateria (L/R/case)", 0x2F),
-            ("0x07 noise value", 0x07),
-            ("0x28 ANC calibração", 0x28),
-            ("0x29 ANC wear", 0x29),
-            ("0x2C detecção de uso", 0x2C),
-            ("0x06 in-ear detect", 0x06),
-            ("0x48 sensibilidade in-ear", 0x48),
-            ("0x32 adaptação ambiente", 0x32),
-            ("0x17 ANC atual", 0x17),
-            ("0x09 game mode", 0x09),
-        ]
-        for (label, cmd) in probes {
-            let resp = await engine.rawRequest(cmd, timeout: 2)
-            lines.append("\(label): \(resp.map(hexStr) ?? "(sem resposta)")")
+        lines.append("--- comandos 0xFE ---")
+        let cmds: [UInt8] = [0x04, 0x06, 0x07, 0x08, 0x0A, 0x0C, 0x0D, 0x10, 0x11, 0x12, 0x14,
+                             0x16, 0x1D, 0x1F, 0x20, 0x22, 0x23, 0x27, 0x28, 0x29, 0x2B, 0x2C,
+                             0x2D, 0x2E, 0x2F, 0x30, 0x32, 0x34, 0x35, 0x37, 0x39, 0x3A, 0x44,
+                             0x48, 0x4A]
+        for cmd in cmds {
+            let resp = await engine.rawRequest(cmd, timeout: 1.5)
+            lines.append("  0x\(String(format: "%02X", cmd)): \(resp.map(hexStr) ?? "-")")
+        }
+        return lines
+    }
+
+    private func readAllCharacteristics() async -> [String] {
+        var lines: [String] = []
+        for (uuid, ch) in charsByUUID.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+            guard ch.properties.contains(.read) else { continue }
+            let value = await readCharacteristic(uuid)
+            lines.append("  \(uuid.uuidString.prefix(8)) = \(value.map(hexStr) ?? "(sem resposta)")")
+        }
+        return lines
+    }
+
+    /// Polls the battery (with charging bits) for N seconds, so charging can be
+    /// observed when the earbuds are placed in the case.
+    func watchBattery(seconds: Int) async -> [String] {
+        var lines: [String] = []
+        let deadline = Date().addingTimeInterval(Double(seconds))
+        while Date() < deadline {
+            if let v = await readCharacteristic(Self.batteryCharUUID), v.count >= 3 {
+                func fmt(_ b: UInt8) -> String {
+                    "\(Int(b & 0x7F))%\(b & 0x80 != 0 ? " (carregando)" : "")"
+                }
+                lines.append("\(Self.timeFormatter.string(from: Date()))  L \(fmt(v[0]))  R \(fmt(v[1]))  case \(fmt(v[2]))")
+            }
+            try? await Task.sleep(for: .seconds(3))
         }
         return lines
     }

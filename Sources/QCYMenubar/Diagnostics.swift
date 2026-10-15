@@ -43,6 +43,15 @@ enum Diagnostics {
             }
         }
 
+        if let idx = CommandLine.arguments.firstIndex(of: "--watch"),
+           idx + 1 < CommandLine.arguments.count,
+           let seconds = Int(CommandLine.arguments[idx + 1]) {
+            print("--- acompanhando bateria por \(seconds)s ---")
+            for line in await model.watchBattery(seconds: seconds) {
+                print("  " + line)
+            }
+        }
+
         if CommandLine.arguments.contains("--write-test") {
             await writeSelfTest(model)
         }
