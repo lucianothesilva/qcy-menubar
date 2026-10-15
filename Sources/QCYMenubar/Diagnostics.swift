@@ -4,8 +4,7 @@ import Foundation
 ///
 /// Connects to the headset with the exact same Swift BLE stack the GUI uses and
 /// prints the resulting state, so the app can be verified from the terminal
-/// without clicking anything. Mirrors the `--self-check` / `--diagnose` idea
-/// from LGwebOS-menubar.
+/// without clicking anything.
 enum Diagnostics {
 
     @MainActor
@@ -30,19 +29,42 @@ enum Diagnostics {
         }
 
         print("Dispositivo    : \(model.deviceName ?? "?")")
-        print("Bateria        : \(model.battery.map { "\($0)%" } ?? "n/d")")
-        print("ANC            : \(model.ancMode.map { "\($0) (\(ANC.label(for: $0)))" } ?? "n/d")")
+        print("Protocolo      : \(model.protocolLabel ?? "?")")
+        print("Bateria        : \(model.battery.summary)")
+        print("ANC            : \(model.ancMode ?? "n/d")")
         print("Game mode      : \(model.gameMode.map { $0 ? "on" : "off" } ?? "n/d")")
-        print("EQ (1/100 dB)  : " + model.eqBands.map(String.init).joined(separator: ", "))
+        print("Bandas EQ      : \(model.eqBands.count)")
+        print("EQ (1/100 dB)  : " + (model.eqGains.isEmpty ? "n/d" : model.eqGains.map(String.init).joined(separator: ", ")))
 
-        // Exercise a write round-trip only if asked, to avoid changing the
-        // user's headset settings unexpectedly.
         if CommandLine.arguments.contains("--write-test") {
-            await model.writeSelfTest()
+            await writeSelfTest(model)
         }
 
         model.disconnect()
         print("RESULTADO: OK")
+    }
+
+    /// Re-applies the current values, so it does not change what the headset is doing.
+    @MainActor
+    private static func writeSelfTest(_ model: HeadsetModel) async {
+        print("--- self-test de escrita (re-aplica os valores atuais) ---")
+
+        if let anc = model.ancMode {
+            await model.selectANC(anc)
+            print("ANC   write \(anc) -> \(model.ancMode ?? "n/d")  \(model.ancMode == anc ? "OK" : "DIVERGE")")
+        }
+
+        if model.supportsGameMode, let original = model.gameMode {
+            await model.toggleGameMode()
+            await model.toggleGameMode()
+            print("Game  toggle 2x -> \(model.gameMode.map { $0 ? "on" : "off" } ?? "n/d")  \(model.gameMode == original ? "OK" : "DIVERGE")")
+        }
+
+        if !model.eqBands.isEmpty {
+            let before = model.eqGains
+            await model.applyCustomEQ()
+            print("EQ    re-aplicado -> \(model.eqGains == before ? "igual" : "mudou")")
+        }
     }
 
     @MainActor

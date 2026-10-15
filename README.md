@@ -98,13 +98,19 @@ por-host) e o nome `QCY H3 Pro-APP`.
 
 ## Compatibilidade
 
-- **QCY H3 Pro**: testado e funcionando (conexão automática, bateria, ANC, game
-  mode e equalizador, leitura e escrita).
-- **Outros modelos QCY**: *talvez* funcionem. O app fala o JieLi RCSP no serviço
-  `a002`; se o seu fone expuser esse serviço com o mesmo layout e os mesmos
-  comandos, deve dar certo. Modelos que usam o protocolo padrão da QCY (serviço
-  `1001`/`1002`) ou chipset Airoha/ZR não são suportados. Não há garantia: dá para
-  testar com o modo `--diagnose` (veja abaixo).
+O app suporta **duas famílias de protocolo** e escolhe sozinho pelo GATT:
+
+- **JieLi RCSP** (serviço `a002`): **QCY H3 / H3 Pro**. Testado e funcionando
+  (bateria, ANC, game mode e EQ de 10 bandas, leitura e escrita).
+- **QCY padrão** (`1001`/`1002`): earbuds, ex. **MeloBuds N60**. Testado no N60:
+  bateria (L/R/case), ANC e game mode. O EQ desse caminho ainda está em ajuste.
+
+No caminho QCY padrão o app identifica o modelo pelo `vendorId` do manufacturer
+data (`0x521C`) e busca a definição de controle (modos de ANC com os cmdids
+reais, bandas de EQ, presets) na API da QCY, a mesma que o app oficial usa.
+
+Modelos com chipset Airoha/ZR, ou que não anunciem o canal BLE, não são
+suportados. Use `--diagnose` para inspecionar qualquer fone.
 
 ## Limitações conhecidas
 

@@ -6,10 +6,6 @@ struct QCYPanel: View {
 
     @State private var tab: PanelTab = .noise
 
-    private let mainModeKeys = ["off", "transparency", "adaptive", "antiwind", "low", "medium", "high"]
-    private let sceneModeKeys = ["commuting-low", "commuting-medium", "commuting-high",
-                                 "indoor-low", "indoor-medium", "indoor-high"]
-
     var body: some View {
         VStack(spacing: 0) {
             header.padding(.horizontal, 13).padding(.top, 14).padding(.bottom, 12)
@@ -89,7 +85,7 @@ struct QCYPanel: View {
 
     private var headsetMark: some View {
         Group {
-            if let image = Self.headsetImage {
+            if let image = Self.productImage(named: model.productImageName) {
                 Image(nsImage: image).resizable().scaledToFit()
             } else {
                 ZStack {
@@ -103,10 +99,10 @@ struct QCYPanel: View {
         .frame(width: 42, height: 42)
     }
 
-    private static let headsetImage: NSImage? = {
-        guard let url = Bundle.main.url(forResource: "Headset", withExtension: "png") else { return nil }
+    private static func productImage(named name: String) -> NSImage? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "png") else { return nil }
         return NSImage(contentsOf: url)
-    }()
+    }
 
     // MARK: - Scrolling content
 
@@ -117,7 +113,7 @@ struct QCYPanel: View {
                     switch tab {
                     case .noise:
                         ancCard
-                        gameCard
+                        if model.supportsGameMode { gameCard }
                     case .equalizer:
                         eqCard
                     case .settings:
@@ -209,33 +205,36 @@ struct QCYPanel: View {
         }
     }
 
-    // MARK: - Status
+    // MARK: - Battery card
 
     private var statusCard: some View {
         PanelCard {
             HStack(spacing: 10) {
-                Image(systemName: batterySymbol(model.battery))
+                Image(systemName: batterySymbol)
                     .font(.system(size: 18))
                     .foregroundStyle(batteryTint)
                 Text("Bateria")
                     .font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 0)
-                Text(model.battery.map { "\($0)%" } ?? "n/d")
-                    .font(.system(size: 16, weight: .semibold))
+                Text(model.battery.summary)
+                    .font(.system(size: 13, weight: .semibold))
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .padding(.vertical, 1)
         }
     }
 
     private var batteryTint: Color {
-        guard let level = model.battery else { return Theme.mutedInk }
+        guard let level = model.battery.level else { return Theme.mutedInk }
+        if model.battery.isCharging { return .green }
         return level <= 20 ? .red : Theme.accent
     }
 
-    private func batterySymbol(_ level: Int?) -> String {
-        guard let level else { return "battery.0" }
-        switch level {
+    private var batterySymbol: String {
+        if model.battery.isCharging { return "battery.100.bolt" }
+        switch model.battery.level ?? 0 {
         case ..<13: return "battery.0"
         case ..<38: return "battery.25"
         case ..<63: return "battery.50"
@@ -252,35 +251,43 @@ struct QCYPanel: View {
                 Label("Modo de ruído", systemImage: "waveform")
                     .font(.system(size: 12, weight: .semibold))
 
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
-                          spacing: 8) {
-                    ForEach(mainModeKeys, id: \.self) { key in
-                        ancTile(key)
+                if model.ancOptions.isEmpty {
+                    Text("Este fone não expôs modos de ruído.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.mutedInk)
+                } else {
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                              spacing: 8) {
+                        ForEach(model.ancOptions) { option in
+                            ancTile(option)
+                        }
                     }
                 }
 
-                HStack(spacing: 8) {
-                    Text("Cenas").font(.system(size: 11)).foregroundStyle(Theme.mutedInk)
-                    Spacer()
-                    Menu(sceneLabel) {
-                        ForEach(sceneModeKeys, id: \.self) { key in
-                            Button(ANC.label(for: key)) { Task { await model.selectANC(key) } }
+                if !model.ancScenes.isEmpty {
+                    HStack(spacing: 8) {
+                        Text("Cenas").font(.system(size: 11)).foregroundStyle(Theme.mutedInk)
+                        Spacer()
+                        Menu(sceneLabel) {
+                            ForEach(model.ancScenes) { scene in
+                                Button(scene.label) { Task { await model.selectANC(scene.key) } }
+                            }
                         }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
                 }
             }
         }
     }
 
-    private func ancTile(_ key: String) -> some View {
+    private func ancTile(_ option: ANCOption) -> some View {
         Button {
-            Task { await model.selectANC(key) }
+            Task { await model.selectANC(option.key) }
         } label: {
             HStack(spacing: 7) {
-                Image(systemName: ancSymbol(key)).frame(width: 16)
-                Text(ancTileLabel(key))
+                Image(systemName: option.symbol).frame(width: 16)
+                Text(option.label)
                     .font(.system(size: 11, weight: .medium))
                     .lineLimit(1)
                     .minimumScaleFactor(0.85)
@@ -289,38 +296,15 @@ struct QCYPanel: View {
             .padding(.horizontal, 10)
             .frame(height: 34)
         }
-        .buttonStyle(TileButtonStyle(selected: model.ancMode == key))
+        .buttonStyle(TileButtonStyle(selected: model.ancMode == option.key))
         .disabled(model.busyCommand)
     }
 
     private var sceneLabel: String {
-        if let mode = model.ancMode, sceneModeKeys.contains(mode) {
-            return ANC.label(for: mode)
+        if let mode = model.ancMode, let scene = model.ancScenes.first(where: { $0.key == mode }) {
+            return scene.label
         }
         return "Escolher"
-    }
-
-    /// Shorter labels for the tile grid (the "(noisy)" suffix does not fit).
-    private func ancTileLabel(_ key: String) -> String {
-        switch key {
-        case "low": return "ANC low"
-        case "medium": return "ANC medium"
-        case "high": return "ANC high"
-        default: return ANC.label(for: key)
-        }
-    }
-
-    private func ancSymbol(_ key: String) -> String {
-        switch key {
-        case "off": return "slash.circle"
-        case "transparency": return "ear"
-        case "adaptive": return "wand.and.stars"
-        case "antiwind": return "wind"
-        case "low": return "speaker.wave.1"
-        case "medium": return "speaker.wave.2"
-        case "high": return "speaker.wave.3"
-        default: return "waveform"
-        }
     }
 
     // MARK: - Game mode
@@ -359,65 +343,77 @@ struct QCYPanel: View {
                         .foregroundStyle(Theme.mutedInk)
                 }
 
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3),
-                          spacing: 6) {
-                    ForEach(EQ.presetNames, id: \.self) { name in
-                        Button {
-                            Task { await model.selectPreset(name) }
-                        } label: {
-                            Text(name)
-                                .font(.system(size: 10, weight: .medium))
-                                .lineLimit(1)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 6)
+                if model.eqBands.isEmpty {
+                    Text("Este fone não expôs o equalizador.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.mutedInk)
+                } else {
+                    if !model.eqPresets.isEmpty {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3),
+                                  spacing: 6) {
+                            ForEach(model.eqPresets, id: \.self) { name in
+                                Button {
+                                    Task { await model.selectPreset(name) }
+                                } label: {
+                                    Text(name)
+                                        .font(.system(size: 10, weight: .medium))
+                                        .lineLimit(1)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 6)
+                                }
+                                .buttonStyle(TileButtonStyle(selected: model.currentPreset == name))
+                                .disabled(model.busyCommand)
+                            }
                         }
-                        .buttonStyle(TileButtonStyle(selected: model.currentPreset == name))
+                    }
+
+                    HStack(alignment: .bottom, spacing: 2) {
+                        ForEach(model.eqBands) { band in
+                            VStack(spacing: 3) {
+                                Text(String(format: "%+.0f", Double(gain(band.index)) / 100))
+                                    .font(.system(size: 9))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.mutedInk)
+                                VerticalSlider(value: bandBinding(band.index), range: -12...12, height: 112)
+                                Text(band.shortLabel)
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(Theme.mutedInk)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+
+                    HStack(spacing: 8) {
+                        Button {
+                            model.resetEQ()
+                        } label: {
+                            Text("Zerar")
+                                .font(.system(size: 11, weight: .medium))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                        }
+                        .buttonStyle(TileButtonStyle())
+
+                        Spacer()
+
+                        Button {
+                            Task { await model.applyCustomEQ() }
+                        } label: {
+                            Text("Aplicar custom")
+                                .font(.system(size: 11, weight: .semibold))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 5)
+                        }
+                        .buttonStyle(TileButtonStyle(selected: true))
                         .disabled(model.busyCommand)
                     }
                 }
-
-                HStack(alignment: .bottom, spacing: 2) {
-                    ForEach(0..<EQ.bandFreqs.count, id: \.self) { i in
-                        VStack(spacing: 3) {
-                            Text(String(format: "%+.0f", Double(model.eqBands[i]) / 100))
-                                .font(.system(size: 9))
-                                .monospacedDigit()
-                                .foregroundStyle(Theme.mutedInk)
-                            VerticalSlider(value: bandBinding(i), range: -12...12, height: 112)
-                            Text(EQ.bandShortLabels[i])
-                                .font(.system(size: 8))
-                                .foregroundStyle(Theme.mutedInk)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity)
-
-                HStack(spacing: 8) {
-                    Button {
-                        model.resetEQ()
-                    } label: {
-                        Text("Zerar")
-                            .font(.system(size: 11, weight: .medium))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 5)
-                    }
-                    .buttonStyle(TileButtonStyle())
-
-                    Spacer()
-
-                    Button {
-                        Task { await model.applyCustomEQ() }
-                    } label: {
-                        Text("Aplicar custom")
-                            .font(.system(size: 11, weight: .semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 5)
-                    }
-                    .buttonStyle(TileButtonStyle(selected: true))
-                    .disabled(model.busyCommand)
-                }
             }
         }
+    }
+
+    private func gain(_ index: Int) -> Int {
+        index < model.eqGains.count ? model.eqGains[index] : 0
     }
 
     // MARK: - Info / settings
@@ -434,16 +430,11 @@ struct QCYPanel: View {
                 .toggleStyle(.switch)
                 .controlSize(.small)
 
+                if let protocolLabel = model.protocolLabel {
+                    infoRow("Protocolo", value: protocolLabel)
+                }
                 if let address = model.connectedAddress {
-                    HStack(spacing: 6) {
-                        Text("BLE").font(.system(size: 10)).foregroundStyle(Theme.mutedInk)
-                        Spacer()
-                        Text(address)
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(Theme.mutedInk)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+                    infoRow("BLE", value: address, monospaced: true)
                 }
 
                 if !model.log.isEmpty {
@@ -469,6 +460,18 @@ struct QCYPanel: View {
                 }
                 .buttonStyle(TileButtonStyle())
             }
+        }
+    }
+
+    private func infoRow(_ title: String, value: String, monospaced: Bool = false) -> some View {
+        HStack(spacing: 6) {
+            Text(title).font(.system(size: 10)).foregroundStyle(Theme.mutedInk)
+            Spacer()
+            Text(value)
+                .font(.system(size: monospaced ? 9 : 11, design: monospaced ? .monospaced : .default))
+                .foregroundStyle(Theme.mutedInk)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 
@@ -522,13 +525,10 @@ struct QCYPanel: View {
 
     private func bandBinding(_ i: Int) -> Binding<Double> {
         Binding(
-            get: {
-                guard i < model.eqBands.count else { return 0 }
-                return Double(model.eqBands[i]) / 100.0
-            },
+            get: { Double(gain(i)) / 100.0 },
             set: { newValue in
-                guard i < model.eqBands.count else { return }
-                model.eqBands[i] = Int((newValue * 100).rounded())
+                guard i < model.eqGains.count else { return }
+                model.eqGains[i] = Int((newValue * 100).rounded())
             }
         )
     }

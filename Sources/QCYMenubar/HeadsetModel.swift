@@ -29,9 +29,9 @@ enum ConnectionState: Equatable {
     }
 }
 
-/// Owns the CoreBluetooth central and the headset state. Everything runs on the
-/// main queue (`CBCentralManager(queue: .main)`), which is the model CoreBluetooth
-/// was designed around, so delegate callbacks and UI updates share one thread.
+/// Owns the CoreBluetooth central (the transport) and dispatches to a protocol
+/// engine once the headset's GATT layout is known. Everything runs on the main
+/// queue (`CBCentralManager(queue: .main)`).
 @MainActor
 final class HeadsetModel: NSObject, ObservableObject {
 
@@ -40,24 +40,42 @@ final class HeadsetModel: NSObject, ObservableObject {
     @Published var connection: ConnectionState = .unknown
     @Published var deviceName: String?
     @Published var connectedAddress: String?
-    @Published var battery: Int?
+    @Published var protocolLabel: String?
+    /// Resource name of the product image to show for the connected model.
+    @Published var productImageName = "Headset"
+
+    @Published var battery: BatteryReading = .unknown
+    @Published var batteryStyle: BatteryStyle = .single
+
     @Published var ancMode: String?
+    @Published var ancOptions: [ANCOption] = []
+    @Published var ancScenes: [ANCOption] = []
     @Published var gameMode: Bool?
-    /// 10 band offsets in 1/100 dB.
-    @Published var eqBands: [Int] = Array(repeating: 0, count: 10)
+    @Published var supportsGameMode = false
+
+    @Published var eqGains: [Int] = []
+    @Published var eqBands: [EQBandInfo] = []
+    @Published var eqPresets: [String] = []
     @Published var currentPreset: String?
+
     @Published var monitorEnabled = false
     @Published var autoConnectEnabled = true
     @Published var busyCommand = false
     @Published var lastError: String?
     @Published var log: [String] = []
 
-    // MARK: - GATT
+    // MARK: - GATT UUIDs
 
-    static let serviceUUID = CBUUID(string: "0000a002-0000-1000-8000-00805f9b34fb")
-    static let writeUUID = CBUUID(string: "00000001-0000-1000-8000-00805f9b34fb")
-    static let notifyUUID = CBUUID(string: "00000002-0000-1000-8000-00805f9b34fb")
+    /// RCSP (H3 / H3 Pro): service `a002`, write `00000001`, notify `00000002`.
+    static let rcspServiceUUID = CBUUID(string: "0000a002-0000-1000-8000-00805f9b34fb")
+    static let rcspWriteUUID = CBUUID(string: "00000001-0000-1000-8000-00805f9b34fb")
+    static let rcspNotifyUUID = CBUUID(string: "00000002-0000-1000-8000-00805f9b34fb")
+    /// QCY standard (most earbuds): write `00001001`, notify `00001002`.
+    static let qcyWriteUUID = CBUUID(string: "00001001-0000-1000-8000-00805f9b34fb")
+    static let qcyNotifyUUID = CBUUID(string: "00001002-0000-1000-8000-00805f9b34fb")
+
     static let cachedIdentifierKey = "QCYPeripheralIdentifier"
+    static let vendorIdKey = "QCYVendorId"
 
     // MARK: - Internal BLE plumbing
 
@@ -66,24 +84,33 @@ final class HeadsetModel: NSObject, ObservableObject {
     private var peripheral: CBPeripheral?
     private var writeChar: CBCharacteristic?
     private var notifyChar: CBCharacteristic?
-    private var rxBuffer: [UInt8] = []
-    private var sn: UInt8 = 0
+    private var notifyHandler: (([UInt8]) -> Void)?
+    private var engine: HeadsetProtocolEngine?
+    private var charsByUUID: [CBUUID: CBCharacteristic] = [:]
+    private var readWaiters: [CBUUID: CheckedContinuation<[UInt8]?, Never>] = [:]
+    private var scannedVendorId: Int?
 
-    private var pending: [UInt8: CheckedContinuation<Packet?, Never>] = [:]
     private var stateCont: CheckedContinuation<CBManagerState, Never>?
     private var scanCont: CheckedContinuation<Void, Never>?
     private var discoveredPeripheral: CBPeripheral?
     private var connectCont: CheckedContinuation<Bool, Never>?
-    private var discoveryCont: CheckedContinuation<Bool, Never>?
-    private var commandTimeout: Task<Void, Never>?
+    private var discoveryCont: CheckedContinuation<ProtocolFamily?, Never>?
+    private var resolvedFamily: ProtocolFamily?
     private var monitorTask: Task<Void, Never>?
     private var autoTask: Task<Void, Never>?
+
+    // Service/characteristic discovery accumulators.
+    private var discoveredServices: [CBService] = []
+    private var discoveredCount = 0
+    private var foundQcyWrite: CBCharacteristic?
+    private var foundQcyNotify: CBCharacteristic?
+    private var foundRcspWrite: CBCharacteristic?
+    private var foundRcspNotify: CBCharacteristic?
 
     private var centralState: CBManagerState = .unknown
 
     override init() {
         super.init()
-        // Touch the lazy manager so it (and its delegate callbacks) come to life.
         _ = central
     }
 
@@ -107,8 +134,6 @@ final class HeadsetModel: NSObject, ObservableObject {
         return f
     }()
 
-    /// `~/Library/Application Support/QCYMenubar/log.txt`, useful to inspect the
-    /// GUI run from the terminal.
     static let logFileURL: URL = {
         let base = FileManager.default.urls(for: .applicationSupportDirectory,
                                             in: .userDomainMask).first
@@ -129,228 +154,76 @@ final class HeadsetModel: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Framing / transport
-
-    private func nextSN() -> UInt8 {
-        sn = sn &+ 1
-        if sn == 0 { sn = 1 }
-        return sn
-    }
-
-    /// Send a command and await its response (matched by sequence number).
-    @discardableResult
-    func send(_ packet: Packet, timeout: TimeInterval = 3.0) async -> Packet? {
-        guard let peripheral, let writeChar, peripheral.state == .connected else {
-            note("send ignorado: não conectado")
-            return nil
-        }
-        var pkt = packet
-        if pkt.sn == 0 { pkt.sn = nextSN() }
-        let data = Data(pkt.encode())
-
-        guard pkt.hasResponse == 1 else {
-            peripheral.writeValue(data, for: writeChar, type: .withoutResponse)
-            return nil
-        }
-
-        return await withCheckedContinuation { (cont: CheckedContinuation<Packet?, Never>) in
-            pending[pkt.sn] = cont
-            peripheral.writeValue(data, for: writeChar, type: .withoutResponse)
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(timeout))
-                if let c = self?.pending.removeValue(forKey: pkt.sn) {
-                    c.resume(returning: nil)
-                }
-            }
-        }
-    }
-
-    private func beBytes(_ value: Int) -> [UInt8] {
-        let v = UInt32(truncatingIfNeeded: value)
-        return [UInt8((v >> 24) & 0xFF), UInt8((v >> 16) & 0xFF),
-                UInt8((v >> 8) & 0xFF), UInt8(v & 0xFF)]
-    }
-
     /// The headset announces itself as "QCY H3 Pro-APP" on the control channel;
     /// the "-APP" suffix is dropped for display.
     static func displayName(from raw: String?) -> String {
-        var name = raw ?? "QCY H3 Pro"
+        var name = raw ?? "QCY"
         if name.lowercased().hasSuffix("-app") {
             name = String(name.dropLast(4))
         }
         name = name.trimmingCharacters(in: .whitespaces)
-        return name.isEmpty ? "QCY H3 Pro" : name
+        return name.isEmpty ? "QCY" : name
     }
 
-    // MARK: - Commands
-
-    @discardableResult
-    private func notifyCommunicationWay() async -> Packet? {
-        await send(Packet(opCode: OpCode.notifyCommunicationWay, params: [0, 0]))
-    }
-
-    func fetchBattery() async -> Int? {
-        let mask = 1 << AdvType.batteryQuantity
-        guard let resp = await send(Packet(opCode: OpCode.getAdvInfo, params: beBytes(mask))) else {
-            return nil
+    /// Product image resource (in Resources/) chosen by the model's vendorId.
+    static func productImageName(forVendorId id: Int?) -> String {
+        switch id {
+        case 23879: return "n60"    // QCY MeloBuds N60
+        default: return "Headset"   // QCY H3 / H3 Pro
         }
-        for tlv in parseTLV(resp.params) where tlv.type == AdvType.batteryQuantity {
-            if let first = tlv.value.first { return Int(first) }
-        }
-        return nil
-    }
-
-    func fetchANCMode() async -> String? {
-        let resp = await send(Packet(opCode: OpCode.custom, params: [0xFE, 0x01, 0x17]))
-        guard let resp else { return nil }
-        return ANC.decode(resp.params)
-    }
-
-    func fetchGameMode() async -> Bool? {
-        let mask = 1 << AdvType.workMode
-        guard let resp = await send(Packet(opCode: OpCode.getAdvInfo, params: beBytes(mask))) else {
-            return nil
-        }
-        for tlv in parseTLV(resp.params) where tlv.type == AdvType.workMode {
-            if let first = tlv.value.first { return first == 0x02 }
-        }
-        return nil
-    }
-
-    func fetchEQ() async -> [Int]? {
-        let resp = await send(Packet(opCode: OpCode.custom, params: [0xFE, 0x01, 0x22]))
-        guard let resp, resp.params.count >= 2, resp.params[0] == 0x22 else { return nil }
-        let ll = Int(resp.params[1])
-        guard resp.params.count >= 2 + ll else { return nil }
-        let data = Array(resp.params[2..<(2 + ll)])
-        guard data.count >= 3 + 7 * 7 else { return nil }
-
-        var bands: [Int: Int] = [:]
-        let numEntries = (data.count - 3) / 7
-        for i in 0..<numEntries {
-            let base = 3 + i * 7
-            let freq = Int(data[base]) | (Int(data[base + 1]) << 8)
-            let raw = Int(data[base + 2]) | (Int(data[base + 3]) << 8)
-            let dbOff = Int16(bitPattern: UInt16(truncatingIfNeeded: raw))
-            if EQ.bandFreqs.contains(freq) { bands[freq] = Int(dbOff) }
-        }
-        guard !bands.isEmpty else { return nil }
-        return EQ.bandFreqs.map { bands[$0] ?? 0 }
-    }
-
-    private func setANC(_ key: String) async {
-        guard let params = ANC.params(for: key) else { return }
-        await send(Packet(opCode: OpCode.custom, params: params))
-    }
-
-    /// Apply a preset by id (1...6) using its default offsets.
-    private func applyPreset(id: Int) async {
-        let offsets = EQ.presetOffsets[id] ?? Array(repeating: 0, count: 10)
-        await setEQ(offsets, presetID: id)
-    }
-
-    func setEQ(_ offsets: [Int], presetID: Int) async {
-        var bandBytes: [UInt8] = []
-        for (i, freq) in EQ.bandFreqs.enumerated() {
-            let def = EQ.bandDefaults[freq] ?? (0, 2)
-            let dbOff = i < offsets.count ? offsets[i] : 0
-            bandBytes.append(UInt8(freq & 0xFF))
-            bandBytes.append(UInt8((freq >> 8) & 0xFF))
-            let raw = UInt16(bitPattern: Int16(clamping: dbOff))
-            bandBytes.append(UInt8(raw & 0xFF))
-            bandBytes.append(UInt8((raw >> 8) & 0xFF))
-            bandBytes.append(UInt8(def.ref & 0xFF))
-            bandBytes.append(UInt8((def.ref >> 8) & 0xFF))
-            bandBytes.append(UInt8(def.q & 0xFF))
-        }
-        let header: [UInt8] = [UInt8(presetID & 0xFF), 0x70, 0xFE]
-        let dataLen = header.count + bandBytes.count
-        let payload: [UInt8] = [0x22, UInt8(dataLen & 0xFF)] + header + bandBytes
-        await send(Packet(opCode: OpCode.custom, params: payload))
-    }
-
-    func setGameMode(_ enabled: Bool) async {
-        let val: UInt8 = enabled ? 0x02 : 0x01
-        await send(Packet(opCode: OpCode.setAdvInfo,
-                          params: [0x02, UInt8(AdvType.workMode), val]))
     }
 
     // MARK: - User actions
 
     func refreshAll() async {
-        if let b = await fetchBattery() { battery = b }
-        if let a = await fetchANCMode() { ancMode = a }
-        if let g = await fetchGameMode() { gameMode = g }
-        if let eq = await fetchEQ() { eqBands = eq; currentPreset = nil }
+        guard let engine else { return }
+        let snapshot = await engine.refresh()
+        apply(snapshot)
+        publishCapabilities()
     }
 
     func selectANC(_ key: String) async {
+        guard let engine else { return }
         busyCommand = true
         defer { busyCommand = false }
-        await setANC(key)
-        try? await Task.sleep(for: .milliseconds(250))
-        if let a = await fetchANCMode() { ancMode = a } else { ancMode = key }
+        if let applied = await engine.applyANC(key) { ancMode = applied }
         note("ANC -> \(key)")
     }
 
     func toggleGameMode() async {
+        guard let engine else { return }
         busyCommand = true
         defer { busyCommand = false }
         let target = !(gameMode ?? false)
-        await setGameMode(target)
-        try? await Task.sleep(for: .milliseconds(250))
-        gameMode = (await fetchGameMode()) ?? target
+        gameMode = await engine.applyGameMode(target) ?? target
         note("Game mode -> \(gameMode == true ? "on" : "off")")
     }
 
     func selectPreset(_ name: String) async {
-        guard let id = EQ.presets[name] else { return }
+        guard let engine else { return }
         busyCommand = true
         defer { busyCommand = false }
-        await applyPreset(id: id)
-        currentPreset = name
-        if let eq = await fetchEQ() { eqBands = eq }
+        if let gains = await engine.applyPreset(name) {
+            eqGains = gains
+            currentPreset = name
+        }
         note("Preset EQ -> \(name)")
     }
 
     func applyCustomEQ() async {
+        guard let engine else { return }
         busyCommand = true
         defer { busyCommand = false }
-        await setEQ(eqBands, presetID: EQ.presets["custom"] ?? 0)
-        currentPreset = "custom"
+        if let gains = await engine.applyEQ(gains: eqGains) { eqGains = gains }
+        currentPreset = eqPresets.contains("custom") ? "custom" : nil
         note("EQ custom aplicado")
     }
 
     func resetEQ() {
-        eqBands = Array(repeating: 0, count: 10)
+        eqGains = Array(repeating: 0, count: eqBands.count)
     }
 
-    /// Round-trip write test used by `--diagnose --write-test`. It re-applies the
-    /// current values, so it does not change what the headset is doing.
-    func writeSelfTest() async {
-        print("--- self-test de escrita (re-aplica os valores atuais) ---")
-
-        if let anc = ancMode {
-            await setANC(anc)
-            try? await Task.sleep(for: .milliseconds(300))
-            let back = await fetchANCMode()
-            print("ANC   write \(anc) -> \(back ?? "n/d")  \(back == anc ? "OK" : "DIVERGE")")
-        }
-
-        if let game = gameMode {
-            await setGameMode(game)
-            try? await Task.sleep(for: .milliseconds(300))
-            let back = await fetchGameMode()
-            let label = back.map { $0 ? "on" : "off" } ?? "n/d"
-            print("Game  write \(game ? "on" : "off") -> \(label)  \(back == game ? "OK" : "DIVERGE")")
-        }
-
-        print("EQ    write: re-aplicando as 10 bandas como custom")
-        await setEQ(eqBands, presetID: EQ.presets["custom"] ?? 0)
-        try? await Task.sleep(for: .milliseconds(300))
-        let back = await fetchEQ()
-        print("EQ    -> " + (back?.map(String.init).joined(separator: ", ") ?? "n/d"))
-    }
+    // MARK: - Monitor / auto-connect
 
     func setMonitor(_ enabled: Bool) {
         monitorEnabled = enabled
@@ -368,16 +241,14 @@ final class HeadsetModel: NSObject, ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(15))
                 guard let self, !Task.isCancelled else { return }
-                if self.connection == .connected {
-                    if let b = await self.fetchBattery() { self.battery = b }
+                if self.connection == .connected, let engine = self.engine {
+                    let snapshot = await engine.refresh()
+                    if snapshot.battery != .unknown { self.battery = snapshot.battery }
                 }
             }
         }
     }
 
-    // MARK: - Auto-connect
-
-    /// Turn the automatic connection loop on or off.
     func setAutoConnect(_ enabled: Bool) {
         autoConnectEnabled = enabled
         if enabled {
@@ -409,6 +280,59 @@ final class HeadsetModel: NSObject, ObservableObject {
             }
         }
     }
+
+    // MARK: - State helpers
+
+    private func apply(_ snapshot: HeadsetSnapshot) {
+        battery = snapshot.battery
+        if let k = snapshot.ancKey { ancMode = k }
+        if let g = snapshot.gameMode { gameMode = g }
+        if let gains = snapshot.eqGains { eqGains = gains }
+    }
+
+    private func publishCapabilities() {
+        guard let engine else { return }
+        let caps = engine.capabilities
+        protocolLabel = engine.family.label
+        ancOptions = caps.ancOptions
+        ancScenes = caps.ancScenes
+        gameMode = caps.supportsGameMode ? gameMode : nil
+        supportsGameMode = caps.supportsGameMode
+        batteryStyle = caps.batteryStyle
+        eqBands = caps.eqBands
+        eqPresets = caps.eqPresets
+        if eqGains.count != caps.eqBands.count {
+            eqGains = Array(repeating: 0, count: caps.eqBands.count)
+        }
+    }
+}
+
+// MARK: - BLE transport (what a protocol engine talks to)
+
+extension HeadsetModel: BLELink {
+    func writeRaw(_ bytes: [UInt8]) {
+        guard let peripheral, let writeChar, peripheral.state == .connected else { return }
+        peripheral.writeValue(Data(bytes), for: writeChar, type: .withoutResponse)
+    }
+
+    func setNotifyHandler(_ handler: (([UInt8]) -> Void)?) {
+        notifyHandler = handler
+    }
+
+    func readCharacteristic(_ uuid: CBUUID) async -> [UInt8]? {
+        guard let peripheral, let ch = charsByUUID[uuid], peripheral.state == .connected else { return nil }
+        if let value = ch.value, !value.isEmpty { return [UInt8](value) }
+        return await withCheckedContinuation { (cont: CheckedContinuation<[UInt8]?, Never>) in
+            readWaiters[uuid] = cont
+            peripheral.readValue(for: ch)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                if let c = self?.readWaiters.removeValue(forKey: uuid) {
+                    c.resume(returning: nil)
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Connect / disconnect / discovery
@@ -436,11 +360,11 @@ extension HeadsetModel {
             note("Fone conhecido: \(known.name ?? "sem nome")")
         }
         if target == nil {
-            target = await scan(services: [Self.serviceUUID], timeout: 5)
+            target = await scan(services: [Self.rcspServiceUUID], timeout: 5)
         }
         if target == nil {
-            note("Não achou pelo serviço a002; tentando por nome...")
-            target = await scan(services: nil, timeout: 5)
+            note("Tentando por nome / manufacturer data...")
+            target = await scan(services: nil, timeout: 6)
         }
         guard let peripheral = target else {
             connection = .disconnected
@@ -461,17 +385,25 @@ extension HeadsetModel {
         }
         UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: Self.cachedIdentifierKey)
 
-        guard await discoverAndSetup(peripheral) else {
+        guard let family = await discoverAndSetup(peripheral) else {
             connection = .disconnected
-            lastError = "Serviço RCSP (a002) não encontrado."
-            note("Serviço RCSP não encontrado.")
+            lastError = "Protocolo não reconhecido neste fone."
+            note("Nenhum protocolo conhecido encontrado.")
             central.cancelPeripheralConnection(peripheral)
             return
         }
 
-        // Mandatory handshake before the device answers commands.
-        _ = await send(Packet(opCode: OpCode.notifyCommunicationWay, params: [0, 0]))
-        try? await Task.sleep(for: .milliseconds(200))
+        let vendorId = scannedVendorId
+            ?? UserDefaults.standard.object(forKey: Self.vendorIdKey) as? Int
+        productImageName = Self.productImageName(forVendorId: vendorId)
+        let newEngine: HeadsetProtocolEngine = (family == .rcsp)
+            ? RCSPProtocol()
+            : QCYStandardProtocol(vendorId: vendorId)
+        newEngine.attach(to: self)
+        engine = newEngine
+        note("Protocolo: \(family.label)")
+
+        await newEngine.handshake()
 
         deviceName = Self.displayName(from: peripheral.name)
         connectedAddress = peripheral.identifier.uuidString
@@ -492,7 +424,7 @@ extension HeadsetModel {
         note("Desconectado pelo usuário.")
     }
 
-    // MARK: - Async bridges over the CoreBluetooth callbacks
+    // MARK: - Async bridges
 
     private func ensurePoweredOn() async -> CBManagerState {
         if centralState == .poweredOn { return .poweredOn }
@@ -541,26 +473,39 @@ extension HeadsetModel {
         }
     }
 
-    private func discoverAndSetup(_ p: CBPeripheral) async -> Bool {
-        await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+    /// Discovers every service/characteristic and decides which protocol family
+    /// the headset speaks.
+    private func discoverAndSetup(_ p: CBPeripheral) async -> ProtocolFamily? {
+        discoveredServices = []
+        discoveredCount = 0
+        foundQcyWrite = nil
+        foundQcyNotify = nil
+        foundRcspWrite = nil
+        foundRcspNotify = nil
+        resolvedFamily = nil
+        return await withCheckedContinuation { (cont: CheckedContinuation<ProtocolFamily?, Never>) in
             discoveryCont = cont
             Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(10))
+                try? await Task.sleep(for: .seconds(12))
                 guard let self, let c = self.discoveryCont else { return }
                 self.discoveryCont = nil
-                c.resume(returning: false)
+                c.resume(returning: nil)
             }
-            p.discoverServices([Self.serviceUUID])
+            p.discoverServices(nil)
         }
     }
 
     private func cleanupConnection() {
-        for (_, c) in pending { c.resume(returning: nil) }
-        pending.removeAll()
-        rxBuffer.removeAll()
+        notifyHandler = nil
+        engine = nil
         writeChar = nil
         notifyChar = nil
         peripheral = nil
+        resolvedFamily = nil
+        charsByUUID.removeAll()
+        for (_, c) in readWaiters { c.resume(returning: nil) }
+        readWaiters.removeAll()
+        scannedVendorId = nil
     }
 
     private func mapState(_ s: CBManagerState) -> ConnectionState {
@@ -570,32 +515,6 @@ extension HeadsetModel {
         case .unsupported: return .failed("Bluetooth indisponível neste Mac")
         case .poweredOn: return .disconnected
         default: return .unknown
-        }
-    }
-
-    private func looksLikeHeadset(_ name: String) -> Bool {
-        let n = name.lowercased()
-        return n.contains("qcy") || n.contains("-app")
-    }
-
-    private func handleNotify(_ data: [UInt8]) {
-        rxBuffer.append(contentsOf: data)
-        while true {
-            guard let idx = Packet.indexOfHeader(rxBuffer) else {
-                rxBuffer.removeAll()
-                return
-            }
-            if idx > 0 { rxBuffer.removeFirst(idx) }
-            if rxBuffer.count < 8 { return }
-            let paramLen = (Int(rxBuffer[5]) << 8) | Int(rxBuffer[6])
-            let total = 7 + paramLen + 1
-            if rxBuffer.count < total { return }
-            let pktBytes = Array(rxBuffer[0..<total])
-            rxBuffer.removeFirst(total)
-            guard let pkt = Packet.decode(pktBytes) else { continue }
-            if let c = pending.removeValue(forKey: pkt.sn) {
-                c.resume(returning: pkt)
-            }
         }
     }
 }
@@ -620,7 +539,15 @@ extension HeadsetModel: @preconcurrency CBCentralManagerDelegate {
                         advertisementData: [String: Any],
                         rssi RSSI: NSNumber) {
         let name = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String) ?? ""
-        guard looksLikeHeadset(name) else { return }
+        if let md = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data, md.count >= 4 {
+            let company = UInt16(md[md.startIndex]) | (UInt16(md[md.startIndex + 1]) << 8)
+            if company == 0x521C {
+                let vid = (Int(md[md.startIndex + 2]) << 8) | Int(md[md.startIndex + 3])
+                scannedVendorId = vid
+                UserDefaults.standard.set(vid, forKey: Self.vendorIdKey)
+            }
+        }
+        guard matchesHeadset(name: name, advertisement: advertisementData) else { return }
         guard let c = scanCont else { return }
         scanCont = nil
         discoveredPeripheral = peripheral
@@ -659,35 +586,85 @@ extension HeadsetModel: @preconcurrency CBCentralManagerDelegate {
 extension HeadsetModel: @preconcurrency CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard let services = peripheral.services,
-              let svc = services.first(where: { $0.uuid == Self.serviceUUID }) else {
-            if let c = discoveryCont { discoveryCont = nil; c.resume(returning: false) }
+        guard let services = peripheral.services, !services.isEmpty else {
+            finishDiscovery(.none)
             return
         }
-        peripheral.discoverCharacteristics([Self.writeUUID, Self.notifyUUID], for: svc)
+        discoveredServices = services
+        discoveredCount = 0
+        for svc in services {
+            peripheral.discoverCharacteristics(nil, for: svc)
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral,
                     didDiscoverCharacteristicsFor service: CBService,
                     error: Error?) {
-        guard let chars = service.characteristics else { return }
-        for ch in chars {
-            if ch.uuid == Self.writeUUID { writeChar = ch }
-            if ch.uuid == Self.notifyUUID {
-                notifyChar = ch
-                peripheral.setNotifyValue(true, for: ch)
+        discoveredCount += 1
+        for ch in service.characteristics ?? [] {
+            charsByUUID[ch.uuid] = ch
+            if ch.uuid == Self.qcyWriteUUID { foundQcyWrite = ch }
+            if ch.uuid == Self.qcyNotifyUUID { foundQcyNotify = ch }
+            if service.uuid == Self.rcspServiceUUID {
+                if ch.uuid == Self.rcspWriteUUID { foundRcspWrite = ch }
+                if ch.uuid == Self.rcspNotifyUUID { foundRcspNotify = ch }
             }
         }
-        if let c = discoveryCont, writeChar != nil, notifyChar != nil {
-            discoveryCont = nil
-            c.resume(returning: true)
+        if discoveredCount >= discoveredServices.count {
+            // Prefer the QCY standard layout when both are somehow present.
+            if foundQcyWrite != nil, foundQcyNotify != nil {
+                writeChar = foundQcyWrite
+                notifyChar = foundQcyNotify
+                subscribe(peripheral, notifyChar)
+                finishDiscovery(.qcyStandard)
+            } else if foundRcspWrite != nil, foundRcspNotify != nil {
+                writeChar = foundRcspWrite
+                notifyChar = foundRcspNotify
+                subscribe(peripheral, notifyChar)
+                finishDiscovery(.rcsp)
+            } else {
+                finishDiscovery(.none)
+            }
         }
     }
 
     func peripheral(_ peripheral: CBPeripheral,
                     didUpdateValueFor characteristic: CBCharacteristic,
                     error: Error?) {
-        guard characteristic.uuid == Self.notifyUUID, let data = characteristic.value else { return }
-        handleNotify([UInt8](data))
+        if let c = readWaiters.removeValue(forKey: characteristic.uuid), let value = characteristic.value {
+            c.resume(returning: [UInt8](value))
+            return
+        }
+        guard characteristic.uuid == notifyChar?.uuid, let data = characteristic.value else { return }
+        notifyHandler?([UInt8](data))
+    }
+
+    private func subscribe(_ peripheral: CBPeripheral, _ characteristic: CBCharacteristic?) {
+        guard let characteristic else { return }
+        peripheral.setNotifyValue(true, for: characteristic)
+    }
+}
+
+// MARK: - Discovery bookkeeping (stored as free helpers on the model)
+
+extension HeadsetModel {
+    /// Called once discovery finishes; decides the family and resumes the caller.
+    fileprivate func finishDiscovery(_ family: ProtocolFamily?) {
+        resolvedFamily = family
+        guard let c = discoveryCont else { return }
+        discoveryCont = nil
+        c.resume(returning: family)
+    }
+
+    /// A device is a candidate if the name looks like QCY or it advertises the
+    /// QCY manufacturer ID (0x521C).
+    fileprivate func matchesHeadset(name: String, advertisement: [String: Any]) -> Bool {
+        let n = name.lowercased()
+        if n.contains("qcy") || n.contains("-app") { return true }
+        if let md = advertisement[CBAdvertisementDataManufacturerDataKey] as? Data, md.count >= 2 {
+            let company = UInt16(md[md.startIndex]) | (UInt16(md[md.startIndex + 1]) << 8)
+            if company == 0x521C { return true }
+        }
+        return false
     }
 }
