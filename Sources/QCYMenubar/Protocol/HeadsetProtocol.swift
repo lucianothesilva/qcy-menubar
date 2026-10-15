@@ -129,4 +129,6 @@ protocol HeadsetProtocolEngine: AnyObject {
     func applyGameMode(_ enabled: Bool) async -> Bool?
     func applyEQ(gains: [Int]) async -> [Int]?
     func applyPreset(_ name: String) async -> [Int]?
+    /// Raw diagnostic request (`0xFE 0x01 <cmd>` for the QCY standard protocol).
+    func rawRequest(_ cmd: UInt8, timeout: TimeInterval) async -> [UInt8]?
 }

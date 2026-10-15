@@ -76,6 +76,8 @@ final class HeadsetModel: NSObject, ObservableObject {
 
     static let cachedIdentifierKey = "QCYPeripheralIdentifier"
     static let vendorIdKey = "QCYVendorId"
+    static let versionCharUUID = CBUUID(string: "00000007-0000-1000-8000-00805f9b34fb")
+    static let batteryCharUUID = CBUUID(string: "00000008-0000-1000-8000-00805f9b34fb")
 
     // MARK: - Internal BLE plumbing
 
@@ -221,6 +223,37 @@ final class HeadsetModel: NSObject, ObservableObject {
 
     func resetEQ() {
         eqGains = Array(repeating: 0, count: eqBands.count)
+    }
+
+    /// Reads per-component diagnostics (battery/version by component, wearing,
+    /// ANC calibration, …) for fault hunting. Returns printable lines.
+    func runDeepDiagnostics() async -> [String] {
+        var lines: [String] = []
+        if let v = await readCharacteristic(Self.versionCharUUID) {
+            lines.append("versão (char 0007): \(hexStr(v))")
+        }
+        if let b = await readCharacteristic(Self.batteryCharUUID) {
+            lines.append("bateria (char 0008): \(hexStr(b))")
+        }
+        guard let engine else { return lines }
+        let probes: [(String, UInt8)] = [
+            ("0x30 versão (L/R)", 0x30),
+            ("0x2F bateria (L/R/case)", 0x2F),
+            ("0x07 noise value", 0x07),
+            ("0x28 ANC calibração", 0x28),
+            ("0x29 ANC wear", 0x29),
+            ("0x2C detecção de uso", 0x2C),
+            ("0x06 in-ear detect", 0x06),
+            ("0x48 sensibilidade in-ear", 0x48),
+            ("0x32 adaptação ambiente", 0x32),
+            ("0x17 ANC atual", 0x17),
+            ("0x09 game mode", 0x09),
+        ]
+        for (label, cmd) in probes {
+            let resp = await engine.rawRequest(cmd, timeout: 2)
+            lines.append("\(label): \(resp.map(hexStr) ?? "(sem resposta)")")
+        }
+        return lines
     }
 
     // MARK: - Monitor / auto-connect

@@ -36,6 +36,13 @@ enum Diagnostics {
         print("Bandas EQ      : \(model.eqBands.count)")
         print("EQ (1/100 dB)  : " + (model.eqGains.isEmpty ? "n/d" : model.eqGains.map(String.init).joined(separator: ", ")))
 
+        if CommandLine.arguments.contains("--deep") {
+            print("--- diagnóstico profundo (por componente) ---")
+            for line in await model.runDeepDiagnostics() {
+                print("  " + line)
+            }
+        }
+
         if CommandLine.arguments.contains("--write-test") {
             await writeSelfTest(model)
         }

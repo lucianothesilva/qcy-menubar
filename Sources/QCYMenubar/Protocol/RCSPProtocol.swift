@@ -155,6 +155,11 @@ final class RCSPProtocol: HeadsetProtocolEngine {
         return await readEQ()
     }
 
+    func rawRequest(_ cmd: UInt8, timeout: TimeInterval) async -> [UInt8]? {
+        let resp = await send(Packet(opCode: OpCode.custom, params: [0xFE, 0x01, cmd]), timeout: timeout)
+        return resp?.params
+    }
+
     // MARK: - RCSP commands
 
     private func readBattery() async -> Int? {

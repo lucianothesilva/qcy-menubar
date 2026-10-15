@@ -138,6 +138,10 @@ final class QCYStandardProtocol: HeadsetProtocolEngine {
     func applyEQ(gains: [Int]) async -> [Int]? { nil }
     func applyPreset(_ name: String) async -> [Int]? { nil }
 
+    func rawRequest(_ cmd: UInt8, timeout: TimeInterval) async -> [UInt8]? {
+        await requestValue(cmd, timeout: timeout)
+    }
+
     // MARK: - Commands
 
     private func readBattery() async -> BatteryReading? {
